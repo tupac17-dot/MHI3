@@ -303,6 +303,11 @@ public class MainController {
             if (!res.errors.isEmpty()) {
                 log("Errors: " + String.join(" | ", res.errors));
             }
+            if (!res.writeLogs.isEmpty()) {
+                for (String line : res.writeLogs) {
+                    log(line);
+                }
+            }
 
             log((apply ? "Apply" : "Preview") + " completed.");
 

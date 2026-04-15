@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.CancellationException;
+import java.nio.charset.StandardCharsets;
 
 public class UpdateCoordinator {
     private final ManifestParser manifestParser = new ManifestParser();
@@ -54,12 +55,8 @@ public class UpdateCoordinator {
                     var parsed = manifestParser.parse(fr.absolutePath());
                     var changes = manifestParser.applyVersion(fr.absolutePath(), parsed.root, target, settings);
                     result.changes.addAll(changes);
-                    if (apply && !settings.previewOnly && !changes.isEmpty()) {
-                        if (settings.backup)
-                            backupService.backup(fr.absolutePath(), backupSession);
-                        atomicWrite(fr.absolutePath(), parsed.toBytes());
-                        result.filesChanged++;
-                    }
+                    maybeWriteUpdatedFile(fr.absolutePath(), parsed.toBytes(), apply, settings, backupSession, result,
+                            "manifest");
                 }
             }
 
@@ -73,12 +70,8 @@ public class UpdateCoordinator {
                         recalc(fr.absolutePath(), parsed.root, index, result, changes, token, manualMappings);
                     }
                     result.changes.addAll(changes);
-                    if (apply && !settings.previewOnly && !changes.isEmpty()) {
-                        if (settings.backup)
-                            backupService.backup(fr.absolutePath(), backupSession);
-                        atomicWrite(fr.absolutePath(), parsed.toBytes());
-                        result.filesChanged++;
-                    }
+                    maybeWriteUpdatedFile(fr.absolutePath(), parsed.toBytes(), apply, settings, backupSession, result,
+                            "checksum manifest");
                 }
             }
 
@@ -90,7 +83,8 @@ public class UpdateCoordinator {
             result.canceled = true;
             result.errors.add(e.getMessage());
         } catch (Exception e) {
-            result.errors.add(e.getMessage());
+            result.errors.add("Unexpected update failure: " + formatException(e));
+            result.writeLogs.add("FATAL: update pipeline aborted: " + formatException(e));
         }
 
         context.markFinished(result.canceled);
@@ -157,10 +151,86 @@ public class UpdateCoordinator {
         }
     }
 
-    private void atomicWrite(Path target, byte[] bytes) throws IOException {
-        Path tmp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
-        Files.write(tmp, bytes, StandardOpenOption.TRUNCATE_EXISTING);
-        Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+    private void maybeWriteUpdatedFile(Path target,
+            byte[] updatedBytes,
+            boolean apply,
+            AppSettings settings,
+            BackupSession backupSession,
+            UpdateResult result,
+            String fileType) {
+        try {
+            byte[] originalBytes = Files.readAllBytes(target);
+            String originalSerialized = new String(originalBytes, StandardCharsets.UTF_8);
+            String updatedSerialized = new String(updatedBytes, StandardCharsets.UTF_8);
+            boolean changed = !originalSerialized.equals(updatedSerialized);
+
+            result.writeLogs.add("WRITE-CHECK [" + fileType + "] target=" + target
+                    + ", apply=" + apply
+                    + ", previewOnly=" + settings.previewOnly
+                    + ", changed=" + changed
+                    + ", originalLength=" + originalBytes.length
+                    + ", updatedLength=" + updatedBytes.length);
+
+            if (!apply) {
+                result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=preview action requested.");
+                return;
+            }
+            if (settings.previewOnly) {
+                result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=settings.previewOnly=true.");
+                return;
+            }
+            if (!changed) {
+                result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=no serialized content change.");
+                return;
+            }
+
+            boolean backupCreated = false;
+            if (settings.backup) {
+                backupService.backup(target, backupSession);
+                backupCreated = true;
+            }
+            result.writeLogs.add("BACKUP [" + fileType + "] target=" + target + ", created=" + backupCreated);
+
+            writeAtomically(target, updatedSerialized, result, fileType);
+            result.filesChanged++;
+            result.writeLogs.add("WRITE-SUCCESS [" + fileType + "] target=" + target);
+        } catch (Exception e) {
+            String message = "Write failed for " + target + ": " + formatException(e);
+            result.errors.add(message);
+            result.writeLogs.add("WRITE-FAIL [" + fileType + "] target=" + target + ", error=" + formatException(e));
+        }
+    }
+
+    private void writeAtomically(Path target, String content, UpdateResult result, String fileType) throws IOException {
+        Path temp = Files.createTempFile(target.getParent(), target.getFileName().toString(), ".tmp");
+        result.writeLogs.add("TEMP-WRITE-START [" + fileType + "] target=" + target + ", temp=" + temp);
+        try {
+            Files.writeString(temp, content);
+            result.writeLogs.add("TEMP-WRITE-SUCCESS [" + fileType + "] temp=" + temp);
+            try {
+                Files.move(temp, target,
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+                result.writeLogs.add("MOVE-SUCCESS [" + fileType + "] mode=ATOMIC_MOVE target=" + target);
+            } catch (IOException atomicMoveEx) {
+                result.writeLogs.add("MOVE-ATOMIC-FAILED [" + fileType + "] target=" + target
+                        + ", error=" + formatException(atomicMoveEx)
+                        + ", fallback=REPLACE_EXISTING");
+                Files.move(temp, target,
+                        StandardCopyOption.REPLACE_EXISTING);
+                result.writeLogs.add("MOVE-SUCCESS [" + fileType + "] mode=REPLACE_EXISTING target=" + target);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private String formatException(Exception e) {
+        String message = e.getMessage();
+        if (message == null || message.isBlank()) {
+            return e.getClass().getName();
+        }
+        return e.getClass().getName() + ": " + message;
     }
 
     public static class UpdateResult {
@@ -183,6 +253,7 @@ public class UpdateCoordinator {
         public final List<ChangeItem> changes = new ArrayList<>();
         public final List<String> unresolvedChecksumTargets = new ArrayList<>();
         public final List<String> errors = new ArrayList<>();
+        public final List<String> writeLogs = new ArrayList<>();
 
         public String summary() {
             return "opId=" + operationId +
@@ -200,7 +271,8 @@ public class UpdateCoordinator {
                     ", checksumHeuristic=" + checksumHeuristicCount +
                     ", checksumUnresolved=" + checksumUnresolvedCount +
                     ", restoredFiles=" + restoredFilesCount +
-                    ", errors=" + errors.size();
+                    ", errors=" + errors.size() +
+                    ", writeLogs=" + writeLogs.size();
         }
     }
 }
