@@ -283,19 +283,19 @@ public class UpdateCoordinator {
 
             if (!apply) {
                 audit.event(ActionType.FILE_WRITE, ActionStatus.SKIPPED, "Write skipped by preview request", ReportLevel.NORMAL,
-                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, changed, true, false, false, false, false, false));
+                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, changed, true, false, false, false, false, false, false));
                 result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=preview action requested.");
                 return;
             }
             if (settings.previewOnly) {
                 audit.event(ActionType.FILE_WRITE, ActionStatus.SKIPPED, "Write skipped by settings.previewOnly", ReportLevel.NORMAL,
-                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, changed, true, false, false, false, false, false));
+                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, changed, true, false, false, false, false, false, false));
                 result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=settings.previewOnly=true.");
                 return;
             }
             if (!changed) {
                 audit.event(ActionType.FILE_WRITE, ActionStatus.SKIPPED, "Write skipped because content unchanged", ReportLevel.NORMAL,
-                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, false, false, true, false, false, false, false));
+                        evt -> fillWriteDetails(evt, target, null, null, originalBytes.length, updatedBytes.length, false, false, true, false, false, false, false, false));
                 result.writeLogs.add("SKIP-WRITE [" + fileType + "] reason=no serialized content change.");
                 return;
             }
