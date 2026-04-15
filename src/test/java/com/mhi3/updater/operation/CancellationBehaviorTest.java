@@ -1,5 +1,6 @@
 package com.mhi3.updater.operation;
 
+import com.mhi3.updater.audit.model.ReportLevel;
 import com.mhi3.updater.model.AppSettings;
 import com.mhi3.updater.model.ScanResult;
 import com.mhi3.updater.scanner.FolderScannerService;
@@ -40,11 +41,11 @@ class CancellationBehaviorTest {
         AppSettings settings = new AppSettings();
         settings.previewOnly = true;
         var token = (CancellationToken) () -> true;
-        var result = coordinator.process(Path.of("."), empty, new VersionTransformService().derive("P4368"), settings, false, token, Map.of());
+        var result = coordinator.process(Path.of("."), empty, new VersionTransformService().derive("P4368"), settings, false, token, Map.of(), ReportLevel.NORMAL);
         assertTrue(result.canceled);
 
         settings.previewOnly = false;
-        result = coordinator.process(Path.of("."), empty, new VersionTransformService().derive("P4368"), settings, true, token, Map.of());
+        result = coordinator.process(Path.of("."), empty, new VersionTransformService().derive("P4368"), settings, true, token, Map.of(), ReportLevel.NORMAL);
         assertTrue(result.canceled);
     }
 }
