@@ -20,6 +20,7 @@ import com.mhi3.updater.scanner.FileIndexService;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CancellationException;
 
 public class UpdateCoordinator {
     private final ManifestParser manifestParser = new ManifestParser();
@@ -30,12 +31,12 @@ public class UpdateCoordinator {
     private final BackupHistoryService backupHistoryService = new BackupHistoryService();
 
     public UpdateResult process(Path root,
-                                ScanResult scan,
-                                VersionInfo target,
-                                AppSettings settings,
-                                boolean apply,
-                                CancellationToken token,
-                                Map<String, Path> manualMappings) {
+            ScanResult scan,
+            VersionInfo target,
+            AppSettings settings,
+            boolean apply,
+            CancellationToken token,
+            Map<String, Path> manualMappings) {
         OperationContext context = new OperationContext();
         UpdateResult result = new UpdateResult();
         result.operationId = context.operationId();
@@ -48,12 +49,14 @@ public class UpdateCoordinator {
         try {
             if (settings.updateMnf) {
                 for (FileRecord fr : scan.getManifestFiles()) {
-                    if (token.isCancelled()) throw new CancellationException("Operation canceled by user");
+                    if (token.isCancelled())
+                        throw new CancellationException("Operation canceled by user");
                     var parsed = manifestParser.parse(fr.absolutePath());
                     var changes = manifestParser.applyVersion(fr.absolutePath(), parsed.root, target, settings);
                     result.changes.addAll(changes);
                     if (apply && !settings.previewOnly && !changes.isEmpty()) {
-                        if (settings.backup) backupService.backup(fr.absolutePath(), backupSession);
+                        if (settings.backup)
+                            backupService.backup(fr.absolutePath(), backupSession);
                         atomicWrite(fr.absolutePath(), parsed.toBytes());
                         result.filesChanged++;
                     }
@@ -62,7 +65,8 @@ public class UpdateCoordinator {
 
             if (settings.updateCks) {
                 for (FileRecord fr : scan.getChecksumFiles()) {
-                    if (token.isCancelled()) throw new CancellationException("Operation canceled by user");
+                    if (token.isCancelled())
+                        throw new CancellationException("Operation canceled by user");
                     var parsed = checksumParser.parse(fr.absolutePath());
                     var changes = checksumParser.applyVersion(fr.absolutePath(), parsed.root, target);
                     if (settings.recalcChecksums) {
@@ -70,7 +74,8 @@ public class UpdateCoordinator {
                     }
                     result.changes.addAll(changes);
                     if (apply && !settings.previewOnly && !changes.isEmpty()) {
-                        if (settings.backup) backupService.backup(fr.absolutePath(), backupSession);
+                        if (settings.backup)
+                            backupService.backup(fr.absolutePath(), backupSession);
                         atomicWrite(fr.absolutePath(), parsed.toBytes());
                         result.filesChanged++;
                     }
@@ -97,17 +102,18 @@ public class UpdateCoordinator {
     }
 
     private void recalc(Path manifestFile,
-                        ObjectNode root,
-                        FileIndexService index,
-                        UpdateResult result,
-                        List<ChangeItem> changes,
-                        CancellationToken token,
-                        Map<String, Path> manualMappings) {
+            ObjectNode root,
+            FileIndexService index,
+            UpdateResult result,
+            List<ChangeItem> changes,
+            CancellationToken token,
+            Map<String, Path> manualMappings) {
         String algorithm = root.path("ChecksumAlgorithm").asText("SHA1");
         JsonNode arr = root.get("PackageChecksumList");
         if (arr instanceof ArrayNode list) {
             for (int i = 0; i < list.size(); i++) {
-                if (token.isCancelled()) throw new CancellationException("Operation canceled during checksum phase");
+                if (token.isCancelled())
+                    throw new CancellationException("Operation canceled during checksum phase");
                 JsonNode item = list.get(i);
                 if (item instanceof ObjectNode obj && obj.has("PackageName")) {
                     String tokenName = obj.get("PackageName").asText();
@@ -118,8 +124,7 @@ public class UpdateCoordinator {
                             resolved.resolutionType(),
                             resolved.confidence(),
                             resolved.needsUserAction(),
-                            resolved.note()
-                    ));
+                            resolved.note()));
                     incrementResolutionCounts(result, resolved.resolutionType());
 
                     if (resolved.resolutionType() == ResolutionType.UNRESOLVED || resolved.resolvedFile() == null) {
@@ -132,7 +137,8 @@ public class UpdateCoordinator {
                         if (!sum.equalsIgnoreCase(old)) {
                             obj.put("CheckSum", sum);
                             result.checksumEntriesUpdated++;
-                            changes.add(new ChangeItem(manifestFile, "PackageChecksumList[" + i + "].CheckSum", old, sum, true));
+                            changes.add(new ChangeItem(manifestFile, "PackageChecksumList[" + i + "].CheckSum", old,
+                                    sum, true));
                         }
                     } catch (IOException e) {
                         result.errors.add("Checksum error for " + tokenName + ": " + e.getMessage());
