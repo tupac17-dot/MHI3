@@ -27,9 +27,11 @@ public class BackupHistoryService {
         Path dir = metadataDir(root);
         List<BackupSession> out = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*.json")) {
-            for (Path p : stream) out.add(mapper.readValue(p.toFile(), BackupSession.class));
+            for (Path p : stream)
+                out.add(mapper.readValue(p.toFile(), BackupSession.class));
         }
-        out.sort(Comparator.comparing(s -> s.startedAt, Comparator.nullsLast(String::compareTo)).reversed());
+        out.sort(Comparator.comparing((BackupSession s) -> s.startedAt, Comparator.nullsLast(String::compareTo))
+                .reversed());
         return out;
     }
 }
