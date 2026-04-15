@@ -60,7 +60,7 @@ public class UpdateCoordinator {
                 }
             }
 
-            if (settings.updateCks) {
+            if (settings.updateMode != UpdateMode.APPEND_SUPPORTED_TRAINS_ONLY && settings.updateCks) {
                 for (FileRecord fr : scan.getChecksumFiles()) {
                     if (token.isCancelled())
                         throw new CancellationException("Operation canceled by user");

@@ -47,6 +47,7 @@ public class MainController {
     private final CheckBox previewCb = new CheckBox("Preview only");
     private final CheckBox appendTrainCb = new CheckBox("Append SupportedTrains if missing");
     private final CheckBox replaceLatestTrainCb = new CheckBox("Replace only latest SupportedTrains wildcard");
+    private final ComboBox<UpdateMode> modeCombo = new ComboBox<>();
     private final ProgressBar progress = new ProgressBar(0);
     private final Label summaryLabel = new Label("Ready");
     private final TextArea logArea = new TextArea();
@@ -84,11 +85,16 @@ public class MainController {
         rootFolderField.setText(prefs.get("last.root", ""));
         recursiveCb.setSelected(true);
         updateMnfCb.setSelected(true);
-        updateCksCb.setSelected(true);
-        recalcCb.setSelected(true);
+        updateCksCb.setSelected(false);
+        recalcCb.setSelected(false);
         backupCb.setSelected(true);
         previewCb.setSelected(false);
-        replaceLatestTrainCb.setSelected(true);
+        appendTrainCb.setSelected(true);
+        replaceLatestTrainCb.setSelected(false);
+        modeCombo.getItems().setAll(UpdateMode.values());
+        modeCombo.setValue(UpdateMode.APPEND_SUPPORTED_TRAINS_ONLY);
+        modeCombo.setOnAction(e -> syncUiForMode(modeCombo.getValue()));
+        syncUiForMode(modeCombo.getValue());
 
         Button browse = new Button("Browse");
         browse.setOnAction(e -> chooseFolder());
@@ -98,6 +104,7 @@ public class MainController {
         HBox row1 = new HBox(10, new Label("Root folder:"), rootFolderField, browse, new Label("Target version:"),
                 targetVersionField);
         HBox row2 = new HBox(20, new Label("MUVersion:"), muLabel, new Label("Wildcard:"), wildcardLabel);
+        HBox row3 = new HBox(10, new Label("Mode:"), modeCombo);
         FlowPane options = new FlowPane(10, 8, recursiveCb, updateMnfCb, updateCksCb, recalcCb, backupCb, previewCb,
                 appendTrainCb, replaceLatestTrainCb);
 
@@ -124,7 +131,7 @@ public class MainController {
         mapUnresolvedBtn.setOnAction(e -> mapUnresolvedChecksums());
 
         logArea.setPrefRowCount(8);
-        VBox root = new VBox(10, row1, row2, options, buttons, mapUnresolvedBtn, progress, summaryLabel, center,
+        VBox root = new VBox(10, row1, row2, row3, options, buttons, mapUnresolvedBtn, progress, summaryLabel, center,
                 titled("Log / unresolved checksum targets", logArea));
         root.setPadding(new Insets(10));
         return root;
@@ -229,7 +236,24 @@ public class MainController {
         s.previewOnly = previewCb.isSelected();
         s.appendTrainIfMissing = appendTrainCb.isSelected();
         s.replaceLatestTrainWildcard = replaceLatestTrainCb.isSelected();
+        s.updateMode = modeCombo.getValue();
         return s;
+    }
+
+    private void syncUiForMode(UpdateMode mode) {
+        boolean appendOnlyMode = mode == UpdateMode.APPEND_SUPPORTED_TRAINS_ONLY;
+
+        if (appendOnlyMode) {
+            updateMnfCb.setSelected(true);
+            appendTrainCb.setSelected(true);
+            replaceLatestTrainCb.setSelected(false);
+            updateCksCb.setSelected(false);
+            recalcCb.setSelected(false);
+        }
+
+        updateCksCb.setDisable(appendOnlyMode);
+        recalcCb.setDisable(appendOnlyMode);
+        appendTrainCb.setDisable(appendOnlyMode);
     }
 
     private void runScan() {
