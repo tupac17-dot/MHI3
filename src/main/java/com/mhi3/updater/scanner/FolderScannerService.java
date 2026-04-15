@@ -1,5 +1,9 @@
 package com.mhi3.updater.scanner;
 
+import com.mhi3.updater.audit.AuditTrailService;
+import com.mhi3.updater.audit.model.ActionStatus;
+import com.mhi3.updater.audit.model.ActionType;
+import com.mhi3.updater.audit.model.ReportLevel;
 import com.mhi3.updater.model.FileRecord;
 import com.mhi3.updater.model.ScanResult;
 import com.mhi3.updater.operation.CancellationToken;
@@ -21,8 +25,19 @@ public class FolderScannerService {
     }
 
     public ScanResult scan(Path root, boolean recursive, CancellationToken token) throws IOException {
+        return scan(root, recursive, token, null);
+    }
+
+    public ScanResult scan(Path root, boolean recursive, CancellationToken token, AuditTrailService audit) throws IOException {
         ScanResult result = new ScanResult();
         AtomicBoolean cancelled = new AtomicBoolean(false);
+
+        if (audit != null) {
+            audit.event(ActionType.SCAN, ActionStatus.STARTED, "Scan started", ReportLevel.NORMAL, evt -> {
+                evt.targetFile = root.toString();
+                evt.details.put("recursive", recursive);
+            });
+        }
 
         int maxDepth = recursive ? Integer.MAX_VALUE : 1;
 
@@ -37,6 +52,12 @@ public class FolderScannerService {
                         }
 
                         if (!dir.equals(root) && shouldSkipDirectory(dir)) {
+                            if (audit != null) {
+                                audit.event(ActionType.SKIP, ActionStatus.SKIPPED, "Directory skipped", ReportLevel.DIAGNOSTIC, evt -> {
+                                    evt.targetFile = dir.toString();
+                                    evt.details.put("reason", "system directory");
+                                });
+                            }
                             return FileVisitResult.SKIP_SUBTREE;
                         }
 
@@ -65,6 +86,14 @@ public class FolderScannerService {
                                     Files.size(path));
 
                             result.getAllFiles().add(record);
+                            if (audit != null) {
+                                audit.event(ActionType.FILE_DISCOVERED, ActionStatus.SUCCESS, "File discovered", ReportLevel.DIAGNOSTIC, evt -> {
+                                    evt.targetFile = path.toString();
+                                    evt.details.put("exists", Files.exists(path));
+                                    evt.details.put("size", record.size());
+                                    evt.details.put("fileType", ext);
+                                });
+                            }
 
                             if (fileName.endsWith(".mnf")) {
                                 result.getManifestFiles().add(record);
@@ -74,7 +103,13 @@ public class FolderScannerService {
                                 result.getChecksumFiles().add(record);
                             }
                         } catch (IOException ignored) {
-                            // Skip unreadable file, continue scan
+                            if (audit != null) {
+                                audit.event(ActionType.FILE_READ, ActionStatus.FAILED, "File metadata read failed", ReportLevel.NORMAL, evt -> {
+                                    evt.targetFile = path.toString();
+                                    evt.exceptionType = ignored.getClass().getName();
+                                    evt.exceptionMessage = ignored.getMessage();
+                                });
+                            }
                         }
 
                         return FileVisitResult.CONTINUE;
@@ -88,6 +123,13 @@ public class FolderScannerService {
                         }
 
                         if (exc instanceof AccessDeniedException) {
+                            if (audit != null) {
+                                audit.event(ActionType.FILE_READ, ActionStatus.SKIPPED, "Access denied file skipped", ReportLevel.NORMAL, evt -> {
+                                    evt.targetFile = path.toString();
+                                    evt.exceptionType = exc.getClass().getName();
+                                    evt.exceptionMessage = exc.getMessage();
+                                });
+                            }
                             return FileVisitResult.CONTINUE;
                         }
 
@@ -96,7 +138,19 @@ public class FolderScannerService {
                 });
 
         if (cancelled.get()) {
+            if (audit != null) {
+                audit.event(ActionType.CANCEL, ActionStatus.CANCELED, "Scan canceled by user", ReportLevel.NORMAL, null);
+            }
             throw new IOException("Scan canceled");
+        }
+
+        if (audit != null) {
+            audit.event(ActionType.SCAN, ActionStatus.SUCCESS, "Scan completed", ReportLevel.NORMAL, evt -> {
+                evt.targetFile = root.toString();
+                evt.details.put("filesScanned", result.getAllFiles().size());
+                evt.details.put("manifests", result.getManifestFiles().size());
+                evt.details.put("checksumManifests", result.getChecksumFiles().size());
+            });
         }
 
         return result;

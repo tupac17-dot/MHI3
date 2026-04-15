@@ -1,0 +1,24 @@
+package com.mhi3.updater.audit.model;
+
+public enum ActionType {
+    SCAN,
+    PREVIEW,
+    APPLY,
+    FILE_DISCOVERED,
+    FILE_READ,
+    FILE_WRITE,
+    TEMP_FILE_WRITE,
+    FILE_REPLACE,
+    BACKUP_CREATE,
+    RESTORE,
+    CHECKSUM_RESOLUTION,
+    CHECKSUM_RECALCULATION,
+    REPORT_EXPORT,
+    MANUAL_CHECKSUM_MAPPING,
+    CANCEL,
+    PARSE,
+    VALUE_CHANGE,
+    SKIP,
+    WARNING,
+    ERROR
+}

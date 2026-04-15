@@ -1,5 +1,7 @@
 package com.mhi3.updater.ui;
 
+import com.mhi3.updater.audit.AuditTrailService;
+import com.mhi3.updater.audit.model.*;
 import com.mhi3.updater.backup.BackupHistoryService;
 import com.mhi3.updater.backup.FileBackupService;
 import com.mhi3.updater.backup.model.BackupMetadata;
@@ -18,13 +20,11 @@ import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.scene.Parent;
 import javafx.scene.control.*;
-import javafx.scene.control.cell.PropertyValueFactory;
 import javafx.scene.layout.*;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
-import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -47,6 +47,10 @@ public class MainController {
     private final CheckBox previewCb = new CheckBox("Preview only");
     private final CheckBox appendTrainCb = new CheckBox("Append SupportedTrains if missing");
     private final CheckBox replaceLatestTrainCb = new CheckBox("Replace only latest SupportedTrains wildcard");
+    private final ComboBox<ReportLevel> reportLevelCombo = new ComboBox<>();
+    private final CheckBox exportDiagnosticCb = new CheckBox("Export full diagnostic report");
+    private final Label operationIdLabel = new Label("Operation: -");
+    private final Label auditStatsLabel = new Label("Events: 0 | Warnings: 0 | Errors: 0 | Read: 0 | Written: 0 | Skipped: 0");
     private final ComboBox<UpdateMode> modeCombo = new ComboBox<>();
     private final ProgressBar progress = new ProgressBar(0);
     private final Label summaryLabel = new Label("Ready");
@@ -75,6 +79,8 @@ public class MainController {
 
     private ScanResult lastScan;
     private UpdateCoordinator.UpdateResult lastResult;
+    private AuditReport lastScanAudit;
+    private final List<AuditReport> auditHistory = new ArrayList<>();
 
     public MainController(Stage stage) {
         this.stage = stage;
@@ -92,6 +98,9 @@ public class MainController {
         appendTrainCb.setSelected(true);
         replaceLatestTrainCb.setSelected(false);
         modeCombo.getItems().setAll(UpdateMode.values());
+        reportLevelCombo.getItems().setAll(ReportLevel.values());
+        reportLevelCombo.setValue(ReportLevel.NORMAL);
+        exportDiagnosticCb.setSelected(true);
         modeCombo.setValue(UpdateMode.APPEND_SUPPORTED_TRAINS_ONLY);
         modeCombo.setOnAction(e -> syncUiForMode(modeCombo.getValue()));
         syncUiForMode(modeCombo.getValue());
@@ -104,7 +113,7 @@ public class MainController {
         HBox row1 = new HBox(10, new Label("Root folder:"), rootFolderField, browse, new Label("Target version:"),
                 targetVersionField);
         HBox row2 = new HBox(20, new Label("MUVersion:"), muLabel, new Label("Wildcard:"), wildcardLabel);
-        HBox row3 = new HBox(10, new Label("Mode:"), modeCombo);
+        HBox row3 = new HBox(10, new Label("Mode:"), modeCombo, new Label("Report level:"), reportLevelCombo, exportDiagnosticCb);
         FlowPane options = new FlowPane(10, 8, recursiveCb, updateMnfCb, updateCksCb, recalcCb, backupCb, previewCb,
                 appendTrainCb, replaceLatestTrainCb);
 
@@ -131,7 +140,7 @@ public class MainController {
         mapUnresolvedBtn.setOnAction(e -> mapUnresolvedChecksums());
 
         logArea.setPrefRowCount(8);
-        VBox root = new VBox(10, row1, row2, row3, options, buttons, mapUnresolvedBtn, progress, summaryLabel, center,
+        VBox root = new VBox(10, row1, row2, row3, options, buttons, mapUnresolvedBtn, progress, summaryLabel, operationIdLabel, auditStatsLabel, center,
                 titled("Log / unresolved checksum targets", logArea));
         root.setPadding(new Insets(10));
         return root;
@@ -263,7 +272,13 @@ public class MainController {
             @Override
             protected ScanResult call() throws Exception {
                 updateProgress(0.1, 1);
-                var res = scanner.scan(root, s.scanSubfolders, this::isCancelled);
+                AuditTrailService audit = new AuditTrailService();
+                String opId = java.util.UUID.randomUUID().toString();
+                audit.startOperation(opId, null, "SCAN", s, false, reportLevelCombo.getValue());
+                var res = scanner.scan(root, s.scanSubfolders, this::isCancelled, audit);
+                audit.finishOperation(this.isCancelled());
+                lastScanAudit = audit.report();
+                lastScanAudit.context.operationId = opId;
                 updateProgress(1, 1);
                 return res;
             }
@@ -274,6 +289,8 @@ public class MainController {
             treeView.setRoot(buildTree(root, res.getAllFiles()));
             summaryLabel.setText("Scanned files: " + res.getAllFiles().size() + ", manifests: "
                     + res.getManifestFiles().size() + ", checksum manifests: " + res.getChecksumFiles().size());
+            auditHistory.add(lastScanAudit);
+            refreshAuditStats(lastScanAudit);
             log("Scan complete.");
         });
     }
@@ -309,7 +326,8 @@ public class MainController {
                         settings,
                         apply,
                         this::isCancelled,
-                        manualMappings);
+                        manualMappings,
+                        reportLevelCombo.getValue());
                 updateProgress(1, 1);
                 return r;
             }
@@ -320,6 +338,10 @@ public class MainController {
             changeTable.setItems(FXCollections.observableArrayList(res.changes));
             checksumResolutionTable.setItems(FXCollections.observableArrayList(res.resolutionRows));
             summaryLabel.setText(res.summary());
+            if (res.auditReport != null) {
+                auditHistory.add(res.auditReport);
+                refreshAuditStats(res.auditReport);
+            }
 
             if (!res.unresolvedChecksumTargets.isEmpty()) {
                 log("Unresolved checksum targets: " + String.join(", ", res.unresolvedChecksumTargets));
@@ -334,6 +356,9 @@ public class MainController {
             }
 
             log((apply ? "Apply" : "Preview") + " completed.");
+            if (res.auditReport != null) {
+                log("Latest operation id: " + res.auditReport.context.operationId);
+            }
 
             if (!res.backupSessionId.isBlank()) {
                 log("Backup session created: " + res.backupSessionId);
@@ -395,13 +420,31 @@ public class MainController {
     }
 
     private void exportReport() {
-        if (lastResult == null) {
+        if (auditHistory.isEmpty()) {
             log("No report data yet.");
             return;
         }
+
+        List<String> operationChoices = auditHistory.stream()
+                .map(r -> r.context.operationId + " | " + r.context.workflow + " | started=" + r.context.startedAt)
+                .toList();
+        ChoiceDialog<String> opDialog = new ChoiceDialog<>(operationChoices.get(operationChoices.size() - 1), operationChoices);
+        opDialog.setHeaderText("Select operation report to export");
+        Optional<String> selectedOperation = opDialog.showAndWait();
+        if (selectedOperation.isEmpty()) {
+            return;
+        }
+        String selectedOpId = selectedOperation.get().split(" \\| ")[0];
+        AuditReport selectedReport = auditHistory.stream()
+                .filter(r -> Objects.equals(r.context.operationId, selectedOpId))
+                .findFirst()
+                .orElse(auditHistory.get(auditHistory.size() - 1));
+
         FileChooser chooser = new FileChooser();
-        chooser.setInitialFileName("mhi3-report");
+        chooser.setInitialFileName("mhi3-report-" + selectedOpId.substring(0, Math.min(8, selectedOpId.length())));
         chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("JSON", "*.json"),
+                new FileChooser.ExtensionFilter("JSONL", "*.jsonl"),
                 new FileChooser.ExtensionFilter("CSV", "*.csv"),
                 new FileChooser.ExtensionFilter("TXT", "*.txt"),
                 new FileChooser.ExtensionFilter("HTML", "*.html"));
@@ -412,17 +455,25 @@ public class MainController {
         Task<Void> t = new Task<>() {
             @Override
             protected Void call() throws Exception {
-                String n = file.getName().toLowerCase();
-                if (n.endsWith(".csv"))
-                    reportService.exportCsv(file.toPath(), lastResult.changes);
-                else if (n.endsWith(".html"))
-                    reportService.exportHtml(file.toPath(), lastResult.summary(), lastResult.changes);
-                else
-                    reportService.exportTxt(file.toPath(), lastResult.summary(), lastResult.changes);
+                ReportLevel exportLevel = exportDiagnosticCb.isSelected() ? ReportLevel.DIAGNOSTIC : ReportLevel.BASIC;
+                reportService.export(file.toPath(), selectedReport, exportLevel);
                 return null;
             }
         };
         bindAndRun(t, v -> log("Report exported: " + file));
+    }
+
+    private void refreshAuditStats(AuditReport report) {
+        if (report == null) {
+            return;
+        }
+        operationIdLabel.setText("Latest operation id: " + report.context.operationId);
+        auditStatsLabel.setText("Events: " + report.summary.eventCount
+                + " | Warnings: " + report.summary.warningsCount
+                + " | Errors: " + report.summary.errorsCount
+                + " | Read: " + report.summary.filesRead
+                + " | Written: " + report.summary.filesWritten
+                + " | Skipped: " + report.summary.filesSkipped);
     }
 
     private void mapUnresolvedChecksums() {
@@ -448,6 +499,18 @@ public class MainController {
             selected.ifPresent(sel -> manualMappings.put(token, Path.of(sel)));
         }
         log("Manual mappings updated for current session: " + manualMappings.keySet());
+        if (lastResult != null && lastResult.auditReport != null) {
+            AuditTrailService audit = new AuditTrailService();
+            audit.startOperation(lastResult.auditReport.context.operationId, null, "MANUAL_MAPPING", readSettings(), false, reportLevelCombo.getValue());
+            audit.event(ActionType.MANUAL_CHECKSUM_MAPPING, ActionStatus.SUCCESS, "Manual checksum mapping updated", ReportLevel.NORMAL, evt -> {
+                evt.details.put("mappingCount", manualMappings.size());
+                evt.details.put("tokens", new ArrayList<>(manualMappings.keySet()));
+            });
+            audit.finishOperation(false);
+            AuditReport mappingReport = audit.report();
+            auditHistory.add(mappingReport);
+            refreshAuditStats(mappingReport);
+        }
     }
 
     private void openRestoreDialog() {
@@ -505,7 +568,15 @@ public class MainController {
             if (confirm.showAndWait().orElse(ButtonType.CANCEL) != ButtonType.OK)
                 return;
 
+            AuditTrailService restoreAudit = new AuditTrailService();
+            String restoreOp = java.util.UUID.randomUUID().toString();
+            restoreAudit.startOperation(restoreOp, session.sessionId, "RESTORE", readSettings(), true, reportLevelCombo.getValue());
+            restoreAudit.event(ActionType.RESTORE, ActionStatus.STARTED, "Restore started", ReportLevel.NORMAL, evt -> evt.details.put("fileCount", toRestore.size()));
             var restoreResult = fileBackupService.restore(new RestoreRequest(session.sessionId, toRestore));
+            restoreAudit.event(ActionType.RESTORE, restoreResult.errors.isEmpty() ? ActionStatus.SUCCESS : ActionStatus.FAILED, "Restore finished", ReportLevel.NORMAL, evt -> evt.details.put("restored", restoreResult.restoredCount));
+            restoreAudit.finishOperation(false);
+            auditHistory.add(restoreAudit.report());
+            refreshAuditStats(restoreAudit.report());
             if (lastResult == null)
                 lastResult = new UpdateCoordinator.UpdateResult();
             lastResult.restoredFilesCount = restoreResult.restoredCount;
